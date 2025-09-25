@@ -169,23 +169,41 @@ erDiagram
         timestamp created_at_utc "Creation time"
     }
 
-    %% BRIDGE TABLES (Many-to-Many Relationships)
-    BRIDGE_CUSTOMER_ADDRESS {
+    %% ADDITIONAL DIMENSION TABLES
+    DIM_CUSTOMER_ADDRESS {
+        varchar address_sk PK "Surrogate Key"
         varchar customer_sk FK "FK to fact_customer"
-        varchar address_sk FK "FK to dim_address"
+        varchar address_line1 "Address line 1"
+        varchar address_line2 "Address line 2"
+        varchar city "City"
+        varchar state "State/Province"
+        varchar postal_code "ZIP/Postal code"
+        varchar country "Country"
         varchar address_type "shipping/billing/emergency"
         boolean is_primary "Primary address flag"
-        date effective_date "Relationship start"
-        date expiration_date "Relationship end"
+        boolean is_current "Current address"
+        boolean is_validated "Address validated"
+        date effective_date "SCD: Start date"
+        date expiration_date "SCD: End date"
+        boolean is_active "SCD: Active flag"
+        varchar hash "Change detection hash"
+        timestamp created_at_utc "Creation time"
     }
 
-    BRIDGE_CUSTOMER_PRESCRIPTION {
+    FACT_PRESCRIPTION {
+        varchar prescription_sk PK "Surrogate Key"
         varchar customer_sk FK "FK to fact_customer"
-        integer prescription_id UK "Prescription ID"
-        integer consultation_id "Consultation ID"
+        integer prescription_id UK "Natural prescription ID"
+        integer consultation_id "Related consultation ID"
+        varchar provider_sk FK "FK to dim_provider"
         date prescription_date "Prescription date"
-        varchar prescription_status "Prescription status"
+        varchar prescription_status "active/completed/cancelled"
         varchar formulation_details "Formulation details (JSON)"
+        decimal price "Prescription price"
+        integer refills_remaining "Refills remaining"
+        varchar pharmacy_name "Pharmacy name"
+        varchar run_id "Audit: Run ID"
+        timestamp created_at_utc "Audit: Creation time"
     }
 
     %% RELATIONSHIPS
@@ -197,11 +215,10 @@ erDiagram
     FACT_CUSTOMER ||--o{ DIM_PAYMENT_METHOD : "payment_method_sk"
     FACT_CUSTOMER ||--o{ DIM_CHANNEL_PREFERENCE : "channel_preference_sk"
     
-    %% Bridge table relationships (Many-to-Many)
-    FACT_CUSTOMER ||--o{ BRIDGE_CUSTOMER_ADDRESS : "customer_sk"
-    DIM_ADDRESS ||--o{ BRIDGE_CUSTOMER_ADDRESS : "address_sk"
-    
-    FACT_CUSTOMER ||--o{ BRIDGE_CUSTOMER_PRESCRIPTION : "customer_sk"
+    %% Additional dimension and fact relationships
+    FACT_CUSTOMER ||--o{ DIM_CUSTOMER_ADDRESS : "customer_sk"
+    DIM_PROVIDER ||--o{ FACT_PRESCRIPTION : "provider_sk"
+    FACT_CUSTOMER ||--o{ FACT_PRESCRIPTION : "customer_sk"
 ```
 
 ## Key Design Principles
@@ -215,9 +232,9 @@ erDiagram
 - Most dimensions support historical tracking with `effective_date`, `expiration_date`, `is_active`
 - Enables tracking changes over time (e.g., address changes, subscription changes)
 
-### 3. **Bridge Tables for Many-to-Many**
-- `BRIDGE_CUSTOMER_ADDRESS`: Customers can have multiple addresses
-- `BRIDGE_CUSTOMER_PRESCRIPTION`: Customers have multiple prescriptions over time
+### 3. **Additional Dimensions and Facts**
+- `DIM_CUSTOMER_ADDRESS`: Customer address dimension with SCD Type 2 tracking
+- `FACT_PRESCRIPTION`: Transaction fact table for customer prescriptions over time
 
 ### 4. **Data Lineage & Audit**
 - All tables include audit columns for tracking data lineage
@@ -235,6 +252,7 @@ erDiagram
 | Subscription | `aurora_curology.recharge_subscriptions` | `ordergroove.subscriptions` |
 | Payment | `aurora_curology.payment_methods` | `stripe.payment_methods` |
 | Prescriptions | `aurora_curology.prescriptions` | `pill_prescriptions` |
+| Customer Addresses | `shopify.customer_addresses` | `aurora_curology.users` |
 
 ## Usage Examples
 
@@ -260,15 +278,30 @@ WHERE c.is_subscribed = TRUE
 ```sql
 SELECT 
     c.first_name || ' ' || c.last_name as customer_name,
-    a.address_line1,
-    a.city,
-    a.state,
-    b.effective_date,
-    b.expiration_date,
-    b.address_type
+    ca.address_line1,
+    ca.city,
+    ca.state,
+    ca.effective_date,
+    ca.expiration_date,
+    ca.address_type
 FROM fact_customer c
-JOIN bridge_customer_address b ON c.customer_sk = b.customer_sk
-JOIN dim_address a ON b.address_sk = a.address_sk
+JOIN dim_customer_address ca ON c.customer_sk = ca.customer_sk
 WHERE c.customer_sk = 'specific_customer_sk'
-ORDER BY b.effective_date DESC
+  AND ca.is_active = TRUE
+ORDER BY ca.effective_date DESC
+```
+
+### Prescription History
+```sql
+SELECT 
+    c.first_name || ' ' || c.last_name as customer_name,
+    fp.prescription_date,
+    fp.formulation_details,
+    fp.prescription_status,
+    p.provider_first_name || ' ' || p.provider_last_name as provider_name
+FROM fact_customer c
+JOIN fact_prescription fp ON c.customer_sk = fp.customer_sk
+JOIN dim_provider p ON fp.provider_sk = p.provider_sk
+WHERE c.customer_sk = 'specific_customer_sk'
+ORDER BY fp.prescription_date DESC
 ```
