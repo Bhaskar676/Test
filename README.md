@@ -1,4 +1,11 @@
-ER Diagram
+# Customer Data Model - Entity Relationship Diagram
+
+## Overview
+This ER diagram shows the comprehensive customer data model for Curology, including the central fact table and all supporting dimension tables.
+
+## ER Diagram
+
+```mermaid
 erDiagram
     %% FACT TABLE (CENTER OF STAR SCHEMA)
     FACT_CUSTOMER {
@@ -195,3 +202,73 @@ erDiagram
     DIM_ADDRESS ||--o{ BRIDGE_CUSTOMER_ADDRESS : "address_sk"
     
     FACT_CUSTOMER ||--o{ BRIDGE_CUSTOMER_PRESCRIPTION : "customer_sk"
+```
+
+## Key Design Principles
+
+### 1. **Star Schema Design**
+- Central fact table (`FACT_CUSTOMER`) contains the grain: one row per customer
+- Dimension tables contain descriptive attributes
+- Foreign key relationships from fact to dimensions
+
+### 2. **Slowly Changing Dimensions (SCD Type 2)**
+- Most dimensions support historical tracking with `effective_date`, `expiration_date`, `is_active`
+- Enables tracking changes over time (e.g., address changes, subscription changes)
+
+### 3. **Bridge Tables for Many-to-Many**
+- `BRIDGE_CUSTOMER_ADDRESS`: Customers can have multiple addresses
+- `BRIDGE_CUSTOMER_PRESCRIPTION`: Customers have multiple prescriptions over time
+
+### 4. **Data Lineage & Audit**
+- All tables include audit columns for tracking data lineage
+- Hash columns in dimensions for change detection
+- Run ID and timestamp tracking
+
+## Source System Mapping
+
+| Dimension | Primary Source | Secondary Sources |
+|-----------|----------------|-------------------|
+| Customer Base | `aurora_curology.users` | `shopify.customers`, `bigcommerce.customers` |
+| Addresses | `shopify.customer_addresses` | `aurora_curology.users`, `ordergroove.addresses` |
+| Health Profile | `aurora_curology.consultations` | `survey_check_ins`, `quiz_questions` |
+| Provider | `aurora_curology.user_doctors` | - |
+| Subscription | `aurora_curology.recharge_subscriptions` | `ordergroove.subscriptions` |
+| Payment | `aurora_curology.payment_methods` | `stripe.payment_methods` |
+| Prescriptions | `aurora_curology.prescriptions` | `pill_prescriptions` |
+
+## Usage Examples
+
+### Customer 360 View
+```sql
+SELECT 
+    c.customer_sk,
+    c.first_name || ' ' || c.last_name as full_name,
+    c.email,
+    a.city || ', ' || a.state as location,
+    h.primary_skin_condition,
+    s.subscription_status,
+    p.provider_first_name || ' ' || p.provider_last_name as provider_name
+FROM fact_customer c
+LEFT JOIN dim_address a ON c.primary_address_sk = a.address_sk
+LEFT JOIN dim_health_profile h ON c.health_profile_sk = h.health_profile_sk  
+LEFT JOIN dim_subscription s ON c.current_subscription_sk = s.subscription_sk
+LEFT JOIN dim_provider p ON c.prescribing_provider_sk = p.provider_sk
+WHERE c.is_subscribed = TRUE
+```
+
+### Address History
+```sql
+SELECT 
+    c.first_name || ' ' || c.last_name as customer_name,
+    a.address_line1,
+    a.city,
+    a.state,
+    b.effective_date,
+    b.expiration_date,
+    b.address_type
+FROM fact_customer c
+JOIN bridge_customer_address b ON c.customer_sk = b.customer_sk
+JOIN dim_address a ON b.address_sk = a.address_sk
+WHERE c.customer_sk = 'specific_customer_sk'
+ORDER BY b.effective_date DESC
+```
